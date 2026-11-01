@@ -44,6 +44,7 @@ import type {
   BackgroundId,
   CityId,
   Deal,
+  GameLength,
   GameState,
   MarketId,
   ProductId,
@@ -196,6 +197,7 @@ function Create({ onBack, onStart }: { onBack: () => void; onStart: (g: GameStat
   const [name, setName] = useState("林晓舟");
   const [city, setCity] = useState<CityId>("ningbo");
   const [background, setBackground] = useState<BackgroundId>("english");
+  const [length, setLength] = useState<GameLength>("decade");
   const bg = BACKGROUNDS[background];
   const cityMeta = CITIES[city];
   return (
@@ -263,10 +265,34 @@ function Create({ onBack, onStart }: { onBack: () => void; onStart: (g: GameStat
             ))}
           </div>
 
+          <h2 className="mt-6 font-serif text-xl text-foam">这一局多长</h2>
+          <div className="mt-3 grid gap-2 sm:grid-cols-2">
+            <button
+              type="button"
+              aria-pressed={length === "decade"}
+              onClick={() => setLength("decade")}
+              className={`min-h-11 rounded-xl border px-4 py-3 text-left ${length === "decade" ? "border-brass bg-panel" : "border-line bg-dock"}`}
+            >
+              <span className="font-serif text-lg text-foam">十年局</span>
+              <span className="mt-1 block break-words text-sm text-mist">2018 到 2028。十年到期，按净资产结算，看你混成什么样。</span>
+            </button>
+            <button
+              type="button"
+              aria-pressed={length === "full"}
+              onClick={() => setLength("full")}
+              className={`min-h-11 rounded-xl border px-4 py-3 text-left ${length === "full" ? "border-brass bg-panel" : "border-line bg-dock"}`}
+            >
+              <span className="font-serif text-lg text-foam">完整人生</span>
+              <span className="mt-1 block break-words text-sm text-mist">一直做到六十岁。二十五岁起，随时能自己收手。</span>
+            </button>
+          </div>
+
           <button
             type="button"
             disabled={!name.trim()}
-            onClick={() => onStart(createGame({ name, city, background, seed: Math.floor(Math.random() * 1_000_000_000) }))}
+            onClick={() =>
+              onStart(createGame({ name, city, background, length, seed: Math.floor(Math.random() * 1_000_000_000) }))
+            }
             className="mt-6 min-h-11 w-full rounded-xl bg-brass px-4 py-3 font-serif text-lg text-ink disabled:opacity-40 sm:w-auto"
           >
             挂上工牌
@@ -446,16 +472,30 @@ function Desk({ game, setGame }: { game: GameState; setGame: (g: GameState) => v
                 ) : null}
               </div>
               <div className="sticky bottom-0 mt-auto border-t border-line bg-harbor px-4 py-3">
-                <button
-                  type="button"
-                  data-testid="end-month"
-                  disabled={Boolean(game.summary || game.pendingChoice || game.ending)}
-                  onClick={() => setGame(reduce(game, { type: "endMonth" }))}
-                  className="act-btn min-h-11 items-center rounded-xl bg-brass px-4 py-3 font-serif text-lg text-ink disabled:opacity-40"
-                >
-                  结束本月
-                </button>
-                <p className="mt-2 break-words text-xs text-mist">未用完的精力不会攒到下月。生活费、房租和利息在这时结算。</p>
+                <div className="flex gap-2">
+                  <button
+                    type="button"
+                    data-testid="auto-month"
+                    disabled={Boolean(game.summary || game.pendingChoice || game.ending)}
+                    onClick={() => {
+                      setGame(reduce(game, { type: "autoMonth" }));
+                      setTab("log");
+                    }}
+                    className="act-btn min-h-11 flex-1 items-center rounded-xl border border-brass px-4 py-3 font-serif text-lg text-brass disabled:opacity-40"
+                  >
+                    托管本月
+                  </button>
+                  <button
+                    type="button"
+                    data-testid="end-month"
+                    disabled={Boolean(game.summary || game.pendingChoice || game.ending)}
+                    onClick={() => setGame(reduce(game, { type: "endMonth" }))}
+                    className="act-btn min-h-11 flex-1 items-center rounded-xl bg-brass px-4 py-3 font-serif text-lg text-ink disabled:opacity-40"
+                  >
+                    结束本月
+                  </button>
+                </div>
+                <p className="mt-2 break-words text-xs text-mist">托管会先推单、再开发，剩下的精力补英语，精力用完自动结算。手点结束本月也一样，未用完的精力不会攒到下月。</p>
               </div>
             </section>
           </div>
@@ -772,7 +812,7 @@ function Profile({
           className="inline-flex min-h-11 items-center justify-center gap-2 rounded-xl border border-brass px-4 text-brass disabled:opacity-40"
         >
           <Landmark size={16} />
-          {canRetire(game) ? "收手，看结局" : "三十岁或 2023 年后可以收手"}
+          {canRetire(game) ? "收手，看结局" : "二十五岁起可以收手"}
         </button>
       </div>
     </div>

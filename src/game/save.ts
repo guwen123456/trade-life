@@ -61,6 +61,8 @@ function valid(raw: unknown): raw is GameState {
   if (!isObj(raw)) return false;
   const s = raw;
   if (s.version !== SAVE_VERSION) return false;
+  // P0 新增的 length 字段放行：新档必带，旧档可以没有（loadGame 里补默认值）。
+  if (!(s.length === undefined || s.length === "decade" || s.length === "full")) return false;
   if (!isStr(s.name) || !isStr(s.city) || !isStr(s.background)) return false;
   if (!isStr(s.aimMarket) || !isStr(s.aimProduct)) return false;
   if (!isBool(s.independent) || !isBool(s.rested)) return false;
@@ -134,7 +136,10 @@ export function loadGame(): GameState | null {
     if (!raw) return null;
     const parsed = JSON.parse(raw) as { version?: number; state?: GameState };
     if (!parsed?.state || parsed.version !== SAVE_VERSION || !valid(parsed.state)) return null;
-    return parsed.state;
+    const state = parsed.state;
+    // P0 之前的旧存档没有 length：按完整人生续玩，不改变它原有的节奏。
+    if (state.length !== "decade" && state.length !== "full") state.length = "full";
+    return state;
   } catch {
     return null;
   }

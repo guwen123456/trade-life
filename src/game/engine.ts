@@ -18,6 +18,7 @@ import type {
   Deal,
   Ending,
   Flags,
+  GameLength,
   GameState,
   Lifetime,
   LogEntry,
@@ -158,6 +159,12 @@ function expectedProfit(s: GameState, d: Deal) {
   return revenue * d.margin - Math.max(0, freight * 0.15);
 }
 
+/** 加急保单的费用：订单额（人民币）的 2%，最低 800。钱买时间，把等待计数清零。 */
+function rushFeeOf(s: GameState, d: Deal) {
+  const world = worldAt(s.year, s.month);
+  return Math.max(800, Math.round(d.valueUsd * world.usdCny * 0.02));
+}
+
 function freightCost(d: Deal, world: World) {
   const base = PRODUCTS[d.product].freight;
   const bulk = 1 + Math.max(0, d.valueUsd - 20000) / 90000;
@@ -219,6 +226,12 @@ export function listActions(s: GameState): ActionView[] {
     const freight = freightCost(shipDeal, worldAt(s.year, s.month));
     if (s.cash < freight) shipReason = `这票海运大约 ${yuanShort(freight)}，先凑钱`;
   }
+  const rushTarget = resolveTarget(
+    s,
+    (d) => (d.stage === "production" || d.stage === "collecting") && d.monthsLeft <= 0 && d.readyWait >= 1,
+  );
+  const rushDeal = rushTarget.deal;
+  const rushFee = rushDeal ? rushFeeOf(s, rushDeal) : 0;
 
   const views: ActionView[] = [
     {
@@ -272,6 +285,20 @@ export function listActions(s: GameState): ActionView[] {
         : "没有待回款的单。",
       ok: energy && Boolean(collect.deal),
       reason: !energy ? "这个月的精力用完了" : collect.reason,
+    },
+    {
+      id: "rush",
+      title: "加急保单",
+      energy: 0,
+      detail: rushDeal
+        ? `给「${rushDeal.client}」付 ${yuanShort(rushFee)} 加急费，把等待清零。钱买时间，单先保住。`
+        : "货或款拖得太久时，花钱把等待清零。",
+      ok: !blocked(s) && Boolean(rushDeal) && s.cash >= rushFee,
+      reason: blocked(s)
+        ? "先把这个月了结"
+        : !rushDeal
+          ? rushTarget.reason || "没有拖到需要加急的单"
+          : "加急费不够",
     },
     {
       id: "english",
@@ -384,11 +411,13 @@ function closeDeal(s: GameState, id: string, stage: "won" | "lost") {
 function prospect(s0: GameState) {
   let s = spend(s0);
   const world = worldAt(s.year, s.month);
+  // P0 收紧：基础 0.34→0.22，系数同步放缓。新人开局总成功率约 0.55–0.65，
+  // 英语/人脉长满以后回到 0.86 的封顶，不再是发信必回。
   let chance =
-    0.34 +
-    s.network / 280 +
-    s.english / 420 +
-    world.demand * 0.18 +
+    0.22 +
+    s.network / 320 +
+    s.english / 460 +
+    world.demand * 0.16 +
     (world.fair ? 0.12 : 0) +
     (s.flags.platformMonths > 0 ? 0.1 : 0) +
     (s.flags.shopMonths > 0 ? 0.08 : 0);
@@ -396,11 +425,15 @@ function prospect(s0: GameState) {
   const rolled = roll(s);
   s = rolled.s;
   if (rolled.r > clamp(chance, 0.12, 0.86)) {
-    const miss = pickLine(s, [
+    // 失败要能归因：市场冷、报价被比下去是常态；英语或人脉太薄时，明说是短板。
+    const lines = [
       "发出去四十封。两封自动回复，一封问你是不是机器人。",
-      "平台上的询盘看着眼熟，点开是去年那家还在比价的。",
-      "今天没有新客户。茶凉了，邮箱也凉。",
-    ]);
+      `${MARKETS[s.aimMarket].name}那边这个月冷得很。开发信发出去，像石头沉进港里。`,
+      "有一家回了价，比你的报价低两成。你还没想好怎么接，人已经转头了。",
+    ];
+    if (s.english < 55) lines.push("聊到第三句，你的英语先露了怯。对面回了一个礼貌的句号。");
+    if (s.network < 40) lines.push("没有人替你引荐。冷邮箱的回复率，本来就写在墙上。");
+    const miss = pickLine(s, lines);
     return pushLog(miss.s, miss.item, "info");
   }
   return spawnLead(s, false);
@@ -422,7 +455,10 @@ function spawnLead(s0: GameState, warm: boolean) {
   let product: ProductId = s.aimProduct;
   if (productRoll.r > 0.55) {
     const pool = city.bias;
-    product = pool[Math.floor(productRoll.r * pool.length) % pool.length];
+    // 与市场后备抽取同款修法：把 (0.55, 1] 缩放回 [0, 1) 再取索引。
+    // 此前直接 floor(r * len)：池子只有 2 项时恒抽中 bias[1]，bias[0] 永远刷不出来。
+    const idx = Math.floor(((productRoll.r - 0.55) / 0.45) * pool.length) % pool.length;
+    product = pool[idx];
   }
   if (product === "solar" && !solarUnlocked(s)) product = city.bias[0];
   const spec = PRODUCTS[product];
@@ -633,7 +669,14 @@ function applyProfit(s0: GameState, deal: Deal, payRatio: number, auto: boolean)
     s = closeDeal(s, deal.id, "lost");
     s = { ...s, reputation: clamp(s.reputation - 6, 0, 100), stress: clamp(s.stress + 14, 0, 100) };
     const owe = s.independent ? `工厂尾款仍要付，现金变动 ${yuan(cashDelta)}。` : "公司认了这笔亏，你没有提成。";
-    return pushLog(s, `${auto ? "你没顾上催，" : ""}${deal.client} 的货款落空。${owe}`, "bad");
+    // 坏账也要有出处：哪片市场、哪种死法，让玩家知道下次该防什么。
+    const reason =
+      deal.market === "latam" || deal.market === "me"
+        ? "那边的钱卡在银行和外汇管制里，出不来。"
+        : deal.market === "sea"
+          ? "对方公司账户出事的消息，比货款先到。"
+          : "对方财务换了三任，最后一任不认前任的账。";
+    return pushLog(s, `${auto ? "你没顾上催，" : ""}${deal.client} 的货款落空。${reason}${owe}`, "bad");
   }
   s = closeDeal(s, deal.id, "won");
   s = {
@@ -675,13 +718,36 @@ function collect(s0: GameState, auto = false) {
     return pushLog(s, `${deal.client} 的账期还没到。催早了，对方回了一个冷淡的收到。`, "info");
   }
   const market = MARKETS[deal.market];
-  const skill = clamp(0.82 + s.english / 500 + s.expertise / 600, 0.82, 1.12);
+  // P0 收紧：去掉 0.82 的技能保底。新人按下限 0.35 起算，英语和专业长上去，
+  // 全款率才跟着回来；低信誉市场该坏账还是会坏账。
+  // （平衡微调：首轮自测破产率过高，技能系数略放宽、六成回款窗口 0.2→0.28，
+  // 让"回一部分"成为常见结果，全额落空留给真倒霉和真差的市场。）
+  const skill = clamp(0.35 + s.english / 230 + s.expertise / 280, 0.35, 1.05);
   const pFull = clamp(market.pay * (0.82 + deal.relation / 380) * skill, 0.18, 0.98);
   const got = roll(s);
   s = got.s;
   if (got.r < pFull) return applyProfit(s, deal, 1, auto);
-  if (got.r < pFull + 0.2) return applyProfit(s, deal, 0.6, auto);
+  if (got.r < pFull + 0.28) return applyProfit(s, deal, 0.6, auto);
   return applyProfit(s, deal, 0, auto);
+}
+
+/** 加急保单：付订单额 2% 的加急费，把一张拖住的单的等待计数清零，关系略回。 */
+function rush(s0: GameState) {
+  const target = resolveTarget(
+    s0,
+    (d) => (d.stage === "production" || d.stage === "collecting") && d.monthsLeft <= 0 && d.readyWait >= 1,
+  );
+  if (!target.deal) return s0;
+  const deal = s0.deals.find((d) => d.id === target.deal!.id) ?? target.deal;
+  const fee = rushFeeOf(s0, deal);
+  if (s0.cash < fee) return s0;
+  let s = { ...s0, cash: s0.cash - fee };
+  s = patchDeal(s, deal.id, { readyWait: 0, relation: clamp(deal.relation + 4, 0, 100) });
+  const what =
+    deal.stage === "production"
+      ? "工厂和货代两头都加了钱，交期重新排上，客户那边先稳住了"
+      : "催收的人带着函件上了门，对方把这笔款排进了本周";
+  return pushLog(s, `你给「${deal.client}」加了急，${yuan(fee)} 出去。${what}。`, "info");
 }
 
 function study(s0: GameState, key: "english" | "expertise") {
@@ -792,6 +858,8 @@ function perform(s: GameState, id: ActionId) {
       return ship(s);
     case "collect":
       return collect(s);
+    case "rush":
+      return rush(s);
     case "english":
       return study(s, "english");
     case "expertise":
@@ -811,6 +879,63 @@ function perform(s: GameState, id: ActionId) {
     default:
       return s;
   }
+}
+
+/** 托管的一步：按管道顺序挑一张单推进；没单可推就开发；再剩精力，压力高先休息，否则补英语。 */
+function autoStep(s: GameState): GameState | null {
+  const actOn = (dealId: string, id: ActionId): GameState | null => {
+    const focused = dealId === s.focusId ? s : { ...s, focusId: dealId };
+    const view = listActions(focused).find((v) => v.id === id);
+    if (!view?.ok) return null;
+    return perform(focused, id);
+  };
+  const ok = (id: ActionId) => listActions(s).find((v) => v.id === id)?.ok;
+  const deals = activeDeals(s);
+  const byFocus = (pool: Deal[]) => pool.find((d) => d.id === s.focusId) ?? pool[0];
+
+  const negotiable = deals.filter((d) => NEGOTIABLE.includes(d.stage));
+  if (negotiable.length > 0) {
+    const r = actOn(byFocus(negotiable).id, "follow");
+    if (r) return r;
+  }
+  const confirmed = deals.filter((d) => d.stage === "confirmed");
+  if (confirmed.length > 0) {
+    const r = actOn(byFocus(confirmed).id, "produce");
+    if (r) return r;
+  }
+  const shippable = deals.filter((d) => d.stage === "production" && d.monthsLeft <= 1);
+  if (shippable.length > 0) {
+    const r = actOn(byFocus(shippable).id, "ship");
+    if (r) return r;
+  }
+  const due = deals.filter((d) => d.stage === "collecting" && d.monthsLeft <= 0);
+  if (due.length > 0) {
+    const r = actOn(byFocus(due).id, "collect");
+    if (r) return r;
+  }
+  // 休息检查排在开发之前：按"剩精力才休息"的顺序实测，托管会连月不休、
+  // 压力滚到烧脑（48 局自测 47 局 burnout）。先推单不变，命先保住，再谈开发。
+  if (s.stress >= 70 && ok("rest")) return perform(s, "rest");
+  if (ok("prospect")) return perform(s, "prospect");
+  if (ok("english")) return perform(s, "english");
+  if (ok("expertise")) return perform(s, "expertise");
+  if (ok("rest")) return perform(s, "rest");
+  return null;
+}
+
+/** 托管本月：精力用完自动结束本月。每个动作照常写进手记，托管本身也留一行。 */
+export function autoMonth(s0: GameState): GameState {
+  if (blocked(s0)) return s0;
+  let s = pushLog(s0, "这个月交给托管：先推手里的单，再开发新客户，剩下的精力补英语。手记照记，账照算。", "info");
+  let guard = 0;
+  while (s.energy > 0 && !blocked(s) && guard < 12) {
+    guard += 1;
+    const next = autoStep(s);
+    if (!next) break;
+    s = next;
+  }
+  if (!blocked(s)) s = endMonth(s);
+  return s;
 }
 
 function energyMax(s: GameState) {
@@ -843,34 +968,53 @@ function staffWork(s0: GameState, lines: string[]) {
   return s;
 }
 
+/** 灾害期：行情本身把人卡住，等待不累加——2019 年 12 月至 2020 年 6 月、2021 全年。 */
+function disasterFrozen(year: number, month: number) {
+  return (year === 2019 && month === 12) || (year === 2020 && month <= 6) || year === 2021;
+}
+
 function tickDeals(s: GameState, lines: string[]) {
-  const overdue: Deal[] = [];
+  const frozen = disasterFrozen(s.year, s.month);
   const deals = s.deals.map((d) => {
-    if (d.stage === "production") {
-      if (d.monthsLeft > 0) return { ...d, monthsLeft: d.monthsLeft - 1 };
-      const readyWait = d.readyWait + 1;
-      if (readyWait >= 3) overdue.push({ ...d, readyWait });
-      return { ...d, readyWait };
-    }
-    if (d.stage === "collecting") {
-      if (d.monthsLeft > 0) return { ...d, monthsLeft: d.monthsLeft - 1 };
-      const readyWait = d.readyWait + 1;
-      if (readyWait >= 2) overdue.push({ ...d, readyWait });
-      return { ...d, readyWait };
-    }
-    return d;
+    if (d.stage !== "production" && d.stage !== "collecting") return d;
+    if (d.monthsLeft > 0) return { ...d, monthsLeft: d.monthsLeft - 1 };
+    if (frozen) return d;
+    return { ...d, readyWait: d.readyWait + 1 };
   });
   let next: GameState = { ...s, deals };
-  for (const d of overdue) {
+  // 阶梯惩罚：先警告（扣关系/声誉），给玩家用「加急保单」补救的窗口，最后才真丢。
+  for (const d of deals) {
     const live = next.deals.find((x) => x.id === d.id);
-    if (!live) continue;
+    if (!live || live.stage === "won" || live.stage === "lost") continue;
     if (live.stage === "production") {
-      lines.push(`${live.client} 的货在厂里放太久，产能让给了别人。定金回不来。`);
-      next = closeDeal(next, live.id, "lost");
-      next = { ...next, reputation: clamp(next.reputation - 4, 0, 100) };
+      if (live.readyWait === 3) {
+        lines.push(
+          `${live.client} 的货压在厂里三个月了。对方的邮件还客气，意思已经不客气：再拖，这单就不要了。`,
+        );
+        next = patchDeal(next, live.id, { relation: clamp(live.relation - 10, 0, 100) });
+        next = { ...next, reputation: clamp(next.reputation - 2, 0, 100) };
+      } else if (live.readyWait >= 5) {
+        const refund = Math.round((live.depositPaid || 0) / 2);
+        if (refund > 0) {
+          lines.push(
+            `${live.client} 的货在厂里压了五个月，客户撤了单。工厂退回一半定金 ${yuan(refund)}，另一半算学费。`,
+          );
+          next = { ...next, cash: next.cash + refund };
+        } else {
+          lines.push(`${live.client} 的货在厂里压了五个月，客户撤了单。这单公司认栽，你的名声跟着沾灰。`);
+        }
+        next = closeDeal(next, live.id, "lost");
+        next = { ...next, reputation: clamp(next.reputation - 4, 0, 100) };
+      }
     } else if (live.stage === "collecting") {
-      lines.push(`你一直没催 ${live.client}，这个月底账自己滚过来了。`);
-      next = collect({ ...next, focusId: live.id }, true);
+      if (live.readyWait === 2) {
+        lines.push(`${live.client} 的款拖过两个月。消息还回，钱没影。再放下去，要按坏账准备了。`);
+        next = patchDeal(next, live.id, { relation: clamp(live.relation - 8, 0, 100) });
+        next = { ...next, reputation: clamp(next.reputation - 1, 0, 100) };
+      } else if (live.readyWait >= 4) {
+        lines.push(`你一直没催 ${live.client}，这个月底账自己滚过来了。`);
+        next = collect({ ...next, focusId: live.id }, true);
+      }
     }
   }
   return next;
@@ -924,7 +1068,9 @@ function makeEnding(s: GameState, id: Ending["id"]): Ending {
         ? "压力把睡眠吃完以后，连开发信都像在爬山。"
         : id === "age"
           ? "年纪到了。你把椅子转给后来的人。"
-          : "你自己决定收手。世界还在出运，你不必再跟每一封邮件。";
+          : id === "decade"
+            ? "十年期满。不是被谁赶走的，是日子到了站。"
+            : "你自己决定收手。世界还在出运，你不必再跟每一封邮件。";
   return {
     id,
     rank,
@@ -1238,6 +1384,13 @@ function endMonth(s0: GameState) {
     s = { ...s, ending: makeEnding(s, "age") };
     lines.push("你把这门生意交了出去。");
   }
+  if (s.length === "decade" && !s.ending) {
+    const elapsed = (s.year - 2018) * 12 + (s.month - 3);
+    if (elapsed >= 120) {
+      s = { ...s, ending: makeEnding(s, "decade") };
+      lines.push("十年到了。你给这段合同定的日子，先签到这里。");
+    }
+  }
   const world = worldAt(s.year, s.month);
   lines.push(world.headline);
   s = pushLog(s, world.headline, "world");
@@ -1299,7 +1452,13 @@ function sanitize(s: GameState): GameState {
   };
 }
 
-export function createGame(input: { name: string; city: CityId; background: BackgroundId; seed?: number }): GameState {
+export function createGame(input: {
+  name: string;
+  city: CityId;
+  background: BackgroundId;
+  seed?: number;
+  length?: GameLength;
+}): GameState {
   const bg = BACKGROUNDS[input.background];
   const city = CITIES[input.city];
   const name = input.name.trim().slice(0, 12) || "林晓舟";
@@ -1342,6 +1501,7 @@ export function createGame(input: { name: string; city: CityId; background: Back
     version: 1,
     rng: (input.seed ?? Math.floor(Math.random() * 1_000_000_000)) >>> 0,
     seq: 2,
+    length: input.length ?? "decade",
     name,
     city: input.city,
     background: input.background,
@@ -1381,6 +1541,13 @@ export function createGame(input: { name: string; city: CityId; background: Back
     "info",
   );
   s = pushLog(s, "你还是业务员：公司垫定金和海运，利润你拿三成。哪天辞职，亏盈才全部写你的名字。", "info");
+  s = pushLog(
+    s,
+    s.length === "decade"
+      ? "先做十年。2018 到 2028，够把一门生意从头到尾学一遍。"
+      : "这一行没有写好的终点。做到六十岁，或者做到做不动为止。",
+    "info",
+  );
   return s;
 }
 
@@ -1400,12 +1567,14 @@ export function reduce(state: GameState, action: PlayerAction): GameState {
       return { ...state, aimProduct: action.id };
     case "endMonth":
       return scan(endMonth(state));
+    case "autoMonth":
+      return scan(autoMonth(state));
     case "choose":
       return scan(applyChoice(state, action.optionId));
     case "dismiss":
       return state.pendingChoice ? state : { ...state, summary: null };
     case "retire":
-      if (state.age < 30 && state.year < 2023) return state;
+      if (state.age < 25) return state;
       return { ...state, summary: null, pendingChoice: null, ending: makeEnding(state, "retire") };
     default:
       return state;
@@ -1413,5 +1582,5 @@ export function reduce(state: GameState, action: PlayerAction): GameState {
 }
 
 export function canRetire(s: GameState) {
-  return s.age >= 30 || s.year >= 2023;
+  return s.age >= 25;
 }

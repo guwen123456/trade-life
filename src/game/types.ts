@@ -12,6 +12,7 @@ export type Stage =
   | "won"
   | "lost";
 export type Tone = "info" | "good" | "bad" | "gold" | "world";
+export type GameLength = "decade" | "full";
 
 export interface Deal {
   id: string;
@@ -63,7 +64,7 @@ export interface MonthSummary {
 }
 
 export interface Ending {
-  id: "bankrupt" | "burnout" | "retire" | "age";
+  id: "bankrupt" | "burnout" | "retire" | "age" | "decade";
   rank: string;
   title: string;
   body: string;
@@ -101,6 +102,7 @@ export interface GameState {
   version: number;
   rng: number;
   seq: number;
+  length: GameLength;
   name: string;
   city: CityId;
   background: BackgroundId;
@@ -140,6 +142,7 @@ export type ActionId =
   | "produce"
   | "ship"
   | "collect"
+  | "rush"
   | "english"
   | "expertise"
   | "entertain"
@@ -164,6 +167,7 @@ export type PlayerAction =
   | { type: "aimMarket"; id: MarketId }
   | { type: "aimProduct"; id: ProductId }
   | { type: "endMonth" }
+  | { type: "autoMonth" }
   | { type: "choose"; optionId: string }
   | { type: "dismiss" }
   | { type: "retire" };

@@ -54,25 +54,39 @@ function startPad() {
   bed.gain.value = 1;
   bed.connect(music);
 
-  const tones = [
-    { f: 110, type: "sine" as OscillatorType, v: 0.09 },
-    { f: 164.81, type: "sine" as OscillatorType, v: 0.05 },
-    { f: 220, type: "triangle" as OscillatorType, v: 0.03 },
+  // 和弦垫：Am–F–C–G 缓慢轮换，每 8 秒用滑音过渡到下一组。
+  // 旧版是三个固定音高无限嗡，听久了像风扇；现在和弦在走，底噪还是港口的。
+  const chords: number[][] = [
+    [110.0, 164.81, 261.63], // Am：A2 · E3 · C4
+    [87.31, 130.81, 220.0], // F：F2 · C3 · A3
+    [130.81, 164.81, 196.0], // C：C3 · E3 · G3
+    [98.0, 146.83, 246.94], // G：G2 · D3 · B3
   ];
-  for (const tone of tones) {
+  const toneTypes: OscillatorType[] = ["sine", "sine", "triangle"];
+  const toneGains = [0.08, 0.05, 0.03];
+  const padFilter = audio.createBiquadFilter();
+  padFilter.type = "lowpass";
+  padFilter.frequency.value = 520;
+  padFilter.connect(bed);
+  const oscs = chords[0].map((f, i) => {
     const osc = audio.createOscillator();
-    osc.type = tone.type;
-    osc.frequency.value = tone.f;
-    const filter = audio.createBiquadFilter();
-    filter.type = "lowpass";
-    filter.frequency.value = 520;
+    osc.type = toneTypes[i];
+    osc.frequency.value = f;
     const g = audio.createGain();
-    g.gain.value = tone.v;
-    osc.connect(filter);
-    filter.connect(g);
-    g.connect(bed);
+    g.gain.value = toneGains[i];
+    osc.connect(g);
+    g.connect(padFilter);
     osc.start();
-  }
+    return osc;
+  });
+  let chordIdx = 0;
+  window.setInterval(() => {
+    chordIdx = (chordIdx + 1) % chords.length;
+    const t = audio.currentTime;
+    chords[chordIdx].forEach((f, i) => {
+      oscs[i].frequency.setTargetAtTime(f, t, 1.6);
+    });
+  }, 8000);
 
   const seconds = 3;
   const noiseBuf = audio.createBuffer(1, audio.sampleRate * seconds, audio.sampleRate);
