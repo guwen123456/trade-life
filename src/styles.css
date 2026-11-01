@@ -1,0 +1,114 @@
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Noto Sans SC", "WenQuanYi Zen Hei", "PingFang SC", "Microsoft YaHei", sans-serif;
+  --font-serif: "Noto Serif SC", "Noto Sans SC", "WenQuanYi Zen Hei", "Songti SC", serif;
+  --color-harbor: #10151c;
+  --color-dock: #171e27;
+  --color-panel: #212a36;
+  --color-line: #3a4654;
+  --color-paper: #f3ead8;
+  --color-ink: #1c1914;
+  --color-ink-soft: #5c564c;
+  --color-brass: #e0b15a;
+  --color-brass-2: #8d6828;
+  --color-seal: #9e342c;
+  --color-sea: #5dceba;
+  --color-sea-ink: #0e6b5c;
+  --color-foam: #f4efe4;
+  --color-mist: #b7c2ce;
+  --color-warn: #e0a23a;
+  --radius-card: 0.9rem;
+}
+
+@layer base {
+  button:not(:disabled),
+  [role="button"]:not(:disabled) {
+    cursor: pointer;
+  }
+
+  html {
+    height: 100%;
+  }
+
+  body {
+    min-height: 100%;
+  }
+
+  body {
+    margin: 0;
+    background: var(--color-harbor);
+    color: var(--color-foam);
+    font-family: var(--font-sans);
+    line-height: 1.5;
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--color-brass);
+    outline-offset: 2px;
+  }
+}
+
+.hero-shade {
+  background: linear-gradient(
+    to top,
+    var(--color-harbor) 0%,
+    color-mix(in srgb, var(--color-harbor) 78%, transparent) 38%,
+    color-mix(in srgb, var(--color-harbor) 28%, transparent) 100%
+  );
+}
+
+.paper-grain {
+  background-color: var(--color-paper);
+  background-image: radial-gradient(color-mix(in srgb, var(--color-ink) 7%, transparent) 0.6px, transparent 0.6px);
+  background-size: 8px 8px;
+}
+
+.spine {
+  writing-mode: vertical-rl;
+}
+
+@keyframes cashflash {
+  from {
+    color: var(--color-brass);
+  }
+  to {
+    color: var(--color-foam);
+  }
+}
+
+.cash-flash {
+  animation: cashflash 700ms ease;
+}
+
+.act-list {
+  min-width: 0;
+  width: 100%;
+  overflow-x: hidden;
+  overflow-y: auto;
+}
+
+.act-btn {
+  appearance: none;
+  -webkit-appearance: none;
+  display: flex;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  flex-shrink: 0;
+  flex-direction: column;
+  align-items: stretch;
+  box-sizing: border-box;
+  overflow: visible;
+  white-space: normal;
+  text-align: left;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation: none !important;
+    transition: none !important;
+  }
+}
