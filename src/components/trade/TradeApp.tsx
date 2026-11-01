@@ -153,7 +153,7 @@ function Title({
 }) {
   return (
     <main className="relative min-h-dvh overflow-x-hidden">
-      <img src="/harbor.jpg" alt="" className="absolute inset-0 h-full w-full object-cover" />
+      <img src={`${import.meta.env.BASE_URL}harbor.jpg`} alt="" className="absolute inset-0 h-full w-full object-cover" />
       <div className="hero-shade absolute inset-0" />
       <div className="relative z-10 mx-auto flex min-h-dvh max-w-5xl flex-col justify-end px-4 py-6 md:justify-center md:px-8">
         <div className="mb-3 flex justify-end">
@@ -273,7 +273,7 @@ function Create({ onBack, onStart }: { onBack: () => void; onStart: (g: GameStat
           </button>
         </div>
         <aside className="hidden md:block">
-          <img src="/desk.jpg" alt="" className="h-full w-full object-cover object-[center_20%]" />
+          <img src={`${import.meta.env.BASE_URL}desk.jpg`} alt="" className="h-full w-full object-cover object-[center_20%]" />
         </aside>
       </div>
       <div className="mx-auto max-w-6xl px-4 pb-8 md:px-8">
@@ -793,7 +793,7 @@ function Ending({ game, onAgain, onTitle }: { game: GameState; onAgain: () => vo
   if (!ending) return null;
   return (
     <main className="relative min-h-dvh overflow-x-hidden">
-      <img src="/harbor.jpg" alt="" className="absolute inset-0 h-full w-full object-cover" />
+      <img src={`${import.meta.env.BASE_URL}harbor.jpg`} alt="" className="absolute inset-0 h-full w-full object-cover" />
       <div className="hero-shade absolute inset-0" />
       <div className="relative z-10 mx-auto flex min-h-dvh max-w-xl flex-col justify-end px-4 py-8">
         <p className="text-sm text-brass">{ending.rank}</p>
