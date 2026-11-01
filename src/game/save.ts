@@ -1,4 +1,5 @@
 import { SAVE_VERSION } from "./content";
+import { normalizeGame } from "./engine";
 import type { GameState } from "./types";
 
 const KEY = "trade-life-save";
@@ -30,7 +31,7 @@ export function loadGame(): GameState | null {
     if (!raw) return null;
     const parsed = JSON.parse(raw) as { version?: number; state?: GameState };
     if (!parsed?.state || parsed.version !== SAVE_VERSION || !valid(parsed.state)) return null;
-    return parsed.state;
+    return normalizeGame(parsed.state);
   } catch {
     return null;
   }

@@ -289,7 +289,8 @@ export function worldAt(year: number, month: number): World {
     headline = "这行对你已经不是天气，是气候。";
   }
 
-  const fair = month === 4 || month === 10;
+  const lockedDown = year === 2020 && month <= 5;
+  const fair = (month === 4 || month === 10) && !lockedDown;
   if (fair) {
     demand += 0.08;
     headline = year >= 2025 ? headline : "广交会的月份。名片比睡眠便宜。";

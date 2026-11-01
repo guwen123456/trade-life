@@ -28,6 +28,10 @@ export interface Deal {
   quotedMfg: number;
   depositPaid: number;
   freightPaid: number;
+  /** 这张在产订单已经问过一次涨价。 */
+  hikeSeen?: boolean;
+  /** 这张洽谈已经问过一次回扣。 */
+  greaseSeen?: boolean;
 }
 
 export interface LogEntry {
@@ -60,6 +64,8 @@ export interface MonthSummary {
   payroll: number;
   interest: number;
   lines: string[];
+  /** 一次结算跨过的月份。缺省当作 1。 */
+  span?: number;
 }
 
 export interface Ending {
@@ -81,6 +87,12 @@ export interface Flags {
   shopMonths: number;
   platformMonths: number;
   wageBonus: number;
+  /** 同学的独立站只问一次。旧档没有这个字段时当作还没问过。 */
+  shopAsked: boolean;
+  /** 开局前两次洽谈必定推进，用来把链路走通。旧档缺省为 0。 */
+  tutorialLeft: number;
+  /** 挖人事件的冷却月数。 */
+  poachArm: number;
 }
 
 export interface Lifetime {
@@ -166,4 +178,5 @@ export type PlayerAction =
   | { type: "endMonth" }
   | { type: "choose"; optionId: string }
   | { type: "dismiss" }
-  | { type: "retire" };
+  | { type: "retire" }
+  | { type: "fastForward" };

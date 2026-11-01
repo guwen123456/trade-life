@@ -153,7 +153,26 @@ function expectedProfit(s: GameState, d: Deal) {
   const revenue = d.valueUsd * world.usdCny;
   const mfg = d.quotedMfg > 0 ? d.quotedMfg : revenue * (1 - d.margin);
   const freight = d.freightPaid > 0 ? d.freightPaid : freightCost(d, world);
-  return revenue * d.margin - Math.max(0, freight * 0.15);
+  return revenue - mfg - freight;
+}
+
+/** 这张单做成后，玩家自己大概能拿到的钱。上班是提成，单干是利润。 */
+export function projectedTake(s: GameState, d: Deal) {
+  const profit = expectedProfit(s, d);
+  if (!s.independent) return Math.max(0, profit) * COMMISSION;
+  return profit;
+}
+
+export function patienceLimit(stage: Stage) {
+  if (stage === "lead") return 4;
+  if (stage === "quote" || stage === "sample") return 3;
+  return 0;
+}
+
+export function patienceLeft(d: Deal) {
+  const limit = patienceLimit(d.stage);
+  if (!limit) return null;
+  return Math.max(0, limit - d.readyWait);
 }
 
 function freightCost(d: Deal, world: World) {
@@ -174,12 +193,11 @@ function resolveTarget(s: GameState, pred: (d: Deal) => boolean) {
   const pool = activeDeals(s).filter(pred);
   const focused = focusDeal(s);
   if (focused && pred(focused)) return { deal: focused as Deal, reason: "" };
-  if (focused && !pred(focused)) {
-    return { deal: undefined, reason: `「${focused.client}」对不上这个动作` };
-  }
   if (pool.length === 1) return { deal: pool[0], reason: "" };
-  if (pool.length === 0) return { deal: undefined, reason: "没有处于这个阶段的单" };
-  return { deal: undefined, reason: "有多张单，先点一张再操作" };
+  if (pool.length === 0) {
+    return { deal: undefined, reason: focused ? `「${focused.client}」对不上这个动作` : "没有处于这个阶段的单" };
+  }
+  return { deal: undefined, reason: "有多张单符合，先在下面点一张" };
 }
 
 function blocked(s: GameState) {
@@ -199,8 +217,10 @@ export function listActions(s: GameState): ActionView[] {
     }
   }
   const produce = resolveTarget(s, (d) => d.stage === "confirmed");
-  const ship = resolveTarget(s, (d) => d.stage === "production" && d.monthsLeft <= 1);
-  const collect = resolveTarget(s, (d) => d.stage === "collecting");
+  const ship = resolveTarget(s, (d) => d.stage === "production" && d.monthsLeft <= 0);
+  const collect = resolveTarget(s, (d) => d.stage === "collecting" && d.monthsLeft <= 0);
+  const waitingShip = activeDeals(s).find((d) => d.stage === "production" && d.monthsLeft > 0);
+  const waitingPay = activeDeals(s).find((d) => d.stage === "collecting" && d.monthsLeft > 0);
   const room = creditLimit(s) - s.debt;
   const produceDeal = produce.deal;
   let produceReason = produce.reason;
@@ -231,7 +251,11 @@ export function listActions(s: GameState): ActionView[] {
       id: "follow",
       title: "推进洽谈",
       energy: 1,
-      detail: follow.deal ? `推进「${follow.deal.client}」：报价、打样或逼单。` : "把询盘往签约推进一步。",
+      detail: follow.deal
+        ? s.flags.tutorialLeft > 0 && follow.deal.id === "d1"
+          ? `推进「${follow.deal.client}」。起步这单有人带，这一步会成。`
+          : `推进「${follow.deal.client}」。成功率大约 ${Math.round(followOdds(s, follow.deal) * 100)}%。`
+        : "把询盘往签约推进一步。",
       ok: followOk,
       reason: !energy ? "这个月的精力用完了" : followReason,
     },
@@ -251,25 +275,21 @@ export function listActions(s: GameState): ActionView[] {
       id: "ship",
       title: "验货出运",
       energy: 1,
-      detail: shipDeal
-        ? shipDeal.monthsLeft > 0
-          ? `「${shipDeal.client}」还能再等，硬出就是加急，次品风险会上去。`
-          : `验「${shipDeal.client}」的货，然后订舱。`
-        : "货好了才能验、才能走。",
+      detail: shipDeal ? `验「${shipDeal.client}」的货，然后订舱。货齐了再走，不算加急。` : "货好了才能验、才能走。",
       ok: energy && Boolean(shipDeal) && shipReason === "",
-      reason: !energy ? "这个月的精力用完了" : shipReason || "没有能出运的单",
+      reason: !energy
+        ? "这个月的精力用完了"
+        : shipReason || (waitingShip ? `「${waitingShip.client}」还要 ${waitingShip.monthsLeft} 个月，提前走会变成加急次品` : "没有能出运的单"),
     },
     {
       id: "collect",
       title: "催收回款",
       energy: 1,
-      detail: collect.deal
-        ? collect.deal.monthsLeft > 0
-          ? `「${collect.deal.client}」账期未到，催早了会伤关系。`
-          : `向「${collect.deal.client}」要这笔钱。`
-        : "没有待回款的单。",
+      detail: collect.deal ? `向「${collect.deal.client}」要这笔钱。账期到了。` : "没有到期货款。",
       ok: energy && Boolean(collect.deal),
-      reason: !energy ? "这个月的精力用完了" : collect.reason,
+      reason: !energy
+        ? "这个月的精力用完了"
+        : collect.reason || (waitingPay ? `「${waitingPay.client}」账期还要 ${waitingPay.monthsLeft} 个月` : "没有待回款的单"),
     },
     {
       id: "english",
@@ -362,6 +382,27 @@ function skillChance(s: GameState, base: number, deal: Deal) {
   );
 }
 
+function followOdds(s: GameState, deal: Deal) {
+  const base = deal.stage === "lead" ? 0.42 : deal.stage === "quote" ? 0.4 : 0.46;
+  return skillChance(s, base, deal);
+}
+
+function attempt(s0: GameState, p: number, guided: boolean) {
+  let s = s0;
+  const got = roll(s);
+  s = got.s;
+  if (guided) s = setFlags(s, { tutorialLeft: Math.max(0, s.flags.tutorialLeft - 1) });
+  return { s, ok: guided || got.r < p, r: got.r };
+}
+
+function uniqueClient(s: GameState, base: string) {
+  const used = new Set(s.deals.map((d) => d.client));
+  if (!used.has(base)) return base;
+  let n = 2;
+  while (used.has(`${base}（${n}）`)) n += 1;
+  return `${base}（${n}）`;
+}
+
 function pickLine(s: GameState, lines: string[]) {
   const got = roll(s);
   const item = lines[Math.floor(got.r * lines.length) % lines.length] ?? lines[0];
@@ -439,8 +480,8 @@ function spawnLead(s0: GameState, warm: boolean) {
   const names = CLIENTS[market];
   let nameRoll = roll(s);
   s = nameRoll.s;
-  let client = names[Math.floor(nameRoll.r * names.length) % names.length];
-  if (s.deals.some((d) => d.client === client)) client = `${client} II`;
+  const baseName = names[Math.floor(nameRoll.r * names.length) % names.length];
+  const client = uniqueClient(s, baseName);
   const got = nid(s, "d");
   s = got.s;
   const deal: Deal = {
@@ -471,12 +512,12 @@ function follow(s0: GameState) {
   const deal = s0.deals.find((d) => d.id === target.deal!.id) ?? target.deal;
   if (deal.stage === "quote" && s0.independent && s0.cash < PRODUCTS[deal.product].sample) return s0;
   let s = spend(s0);
+  const guided = s.flags.tutorialLeft > 0 && deal.id === "d1";
   if (deal.stage === "lead") {
-    const p = skillChance(s, 0.42, deal);
-    const got = roll(s);
-    s = got.s;
-    if (got.r < p) {
-      s = patchDeal(s, deal.id, { stage: "quote", relation: clamp(deal.relation + 8, 0, 100) });
+    const rolled = attempt(s, skillChance(s, 0.42, deal), guided);
+    s = rolled.s;
+    if (rolled.ok) {
+      s = patchDeal(s, deal.id, { stage: "quote", relation: clamp(deal.relation + 8, 0, 100), readyWait: 0 });
       return pushLog(s, `${deal.client} 要了正式报价。句子比上次短，这通常是好事。`, "good");
     }
     const relation = clamp(deal.relation - 10, 0, 100);
@@ -484,17 +525,16 @@ function follow(s0: GameState) {
       s = closeDeal(patchDeal(s, deal.id, { relation }), deal.id, "lost");
       return pushLog(s, `${deal.client} 已读不回。这张询盘可以归档了。`, "bad");
     }
-    s = patchDeal(s, deal.id, { relation });
+    s = patchDeal(s, deal.id, { relation, readyWait: 0 });
     return pushLog(s, `${deal.client} 说再看看。外贸里这句话的意思，通常是还在比价。`, "info");
   }
   if (deal.stage === "quote") {
     const sample = PRODUCTS[deal.product].sample;
-    const p = skillChance(s, 0.4, deal);
-    const got = roll(s);
-    s = got.s;
-    if (got.r < p) {
+    const rolled = attempt(s, skillChance(s, 0.4, deal), guided);
+    s = rolled.s;
+    if (rolled.ok) {
       if (s.independent) s = { ...s, cash: s.cash - sample };
-      s = patchDeal(s, deal.id, { stage: "sample", relation: clamp(deal.relation + 6, 0, 100) });
+      s = patchDeal(s, deal.id, { stage: "sample", relation: clamp(deal.relation + 6, 0, 100), readyWait: 0 });
       const who = s.independent ? `你付了样品费 ${yuan(sample)}。` : "样品费公司报销了。";
       return pushLog(s, `${deal.client} 同意打样。${who}`, "good");
     }
@@ -503,25 +543,25 @@ function follow(s0: GameState) {
       s = closeDeal(patchDeal(s, deal.id, { relation }), deal.id, "lost");
       return pushLog(s, `报价被拒。${deal.client} 选了更便宜的一家，连客气都省了。`, "bad");
     }
-    s = patchDeal(s, deal.id, { relation, margin: clamp(deal.margin - 0.015, 0.05, 0.34) });
+    s = patchDeal(s, deal.id, { relation, margin: clamp(deal.margin - 0.015, 0.05, 0.34), readyWait: 0 });
     return pushLog(s, `${deal.client} 嫌贵。你把毛利悄悄削掉一截，等他们下次开口。`, "info");
   }
-  const p = skillChance(s, 0.46, deal);
-  const got = roll(s);
-  s = got.s;
-  if (got.r < p) {
+  const rolled = attempt(s, skillChance(s, 0.46, deal), guided);
+  s = rolled.s;
+  if (rolled.ok) {
     s = patchDeal(s, deal.id, {
       stage: "confirmed",
       relation: clamp(deal.relation + 10, 0, 100),
       monthsLeft: PRODUCTS[deal.product].lead,
+      readyWait: 0,
     });
     return pushLog(s, `${deal.client} 的 PI 签下来了。数字落纸的那一下，比月薪具体。`, "gold");
   }
-  if (got.r > 0.82) {
+  if (rolled.r > 0.82) {
     s = closeDeal(s, deal.id, "lost");
     return pushLog(s, `样品到了，${deal.client} 说方向变了。单子没了，快递盒还在。`, "bad");
   }
-  s = patchDeal(s, deal.id, { relation: clamp(deal.relation - 6, 0, 100) });
+  s = patchDeal(s, deal.id, { relation: clamp(deal.relation - 6, 0, 100), readyWait: 0 });
   return pushLog(s, `样品还在客户的会议上排队。${deal.client} 让你下周再问。`, "info");
 }
 
@@ -535,29 +575,31 @@ function produce(s0: GameState) {
   if (s0.independent && s0.cash < deposit) return s0;
   let s = spend(s0);
   if (s.independent) s = { ...s, cash: s.cash - deposit };
+  const lead = deal.id === "d1" ? 1 : PRODUCTS[deal.product].lead;
   s = patchDeal(s, deal.id, {
     stage: "production",
     quotedMfg,
     depositPaid: s.independent ? deposit : 0,
-    monthsLeft: PRODUCTS[deal.product].lead,
+    monthsLeft: lead,
     readyWait: 0,
   });
   const pay = s.independent ? `定金 ${yuan(deposit)} 打给工厂。` : "公司垫了定金。";
-  return pushLog(s, `${deal.client} 排上产线，预计 ${PRODUCTS[deal.product].lead} 个月。${pay}`, "good");
+  const drilled = deal.id === "d1" ? "公司把练手单的交期压到一个月。" : "";
+  return pushLog(s, `${deal.client} 排上产线，预计 ${lead} 个月。${pay}${drilled}`, "good");
 }
 
 function ship(s0: GameState) {
-  const target = resolveTarget(s0, (d) => d.stage === "production" && d.monthsLeft <= 1);
+  const target = resolveTarget(s0, (d) => d.stage === "production" && d.monthsLeft <= 0);
   if (!target.deal) return s0;
   const deal = s0.deals.find((d) => d.id === target.deal!.id) ?? target.deal;
+  if (deal.monthsLeft > 0) return s0;
   const world = worldAt(s0.year, s0.month);
   const freight = freightCost(deal, world);
   if (s0.independent && s0.cash < freight) return s0;
   let s = spend(s0);
-  const rush = deal.monthsLeft > 0;
   if (s.independent) s = { ...s, cash: s.cash - freight };
   const spec = PRODUCTS[deal.product];
-  let defect = spec.risk + 0.06 - s.expertise / 300 + (rush ? 0.16 : 0) + (s.stress > 85 ? 0.07 : 0);
+  let defect = spec.risk + 0.06 - s.expertise / 300 + (s.stress > 85 ? 0.07 : 0);
   defect = clamp(defect, 0.03, 0.62);
   const got = roll(s);
   s = got.s;
@@ -565,7 +607,8 @@ function ship(s0: GameState) {
     ...s,
     lifetime: { ...s.lifetime, shipped: s.lifetime.shipped + 1 },
   };
-  if (got.r < defect * 0.38) {
+  const practice = deal.id === "d1";
+  if (!practice && got.r < defect * 0.38) {
     s = closeDeal(s, deal.id, "lost");
     s = {
       ...s,
@@ -574,22 +617,26 @@ function ship(s0: GameState) {
     };
     return pushLog(
       s,
-      `验货没过。${deal.client} 拒收，${rush ? "加急" : "这批"}货砸在手里，定金也回不来。`,
+      `验货没过。${deal.client} 拒收，这批货砸在手里，定金也回不来。`,
       "bad",
     );
   }
   let margin = deal.margin;
   let relation = deal.relation;
+  let quotedMfg = deal.quotedMfg > 0 ? deal.quotedMfg : Math.round(deal.valueUsd * world.usdCny * (1 - margin));
   let note = `${deal.client} 的货上船了。海运 ${yuan(freight)}${s.independent ? " 从你账户走" : " 公司支付"}。`;
-  if (got.r < defect) {
+  const claimed = !practice && got.r < defect;
+  if (claimed) {
     margin = clamp(margin * 0.55, 0.04, 0.34);
+    const revenue = deal.valueUsd * world.usdCny;
+    const profit = revenue - quotedMfg - freight;
+    quotedMfg = Math.round(quotedMfg + Math.max(0, profit) * 0.45);
     relation = clamp(relation - 14, 0, 100);
     note = `验货有色差。${deal.client} 要索赔，这单毛利被削掉将近一半。船还是走了。`;
     s = { ...s, reputation: clamp(s.reputation - 3, 0, 100), stress: clamp(s.stress + 6, 0, 100) };
   } else {
     s = { ...s, reputation: clamp(s.reputation + 2, 0, 100) };
   }
-  const quotedMfg = deal.quotedMfg > 0 ? deal.quotedMfg : Math.round(deal.valueUsd * world.usdCny * (1 - margin));
   s = patchDeal(s, deal.id, {
     stage: "collecting",
     margin,
@@ -599,7 +646,7 @@ function ship(s0: GameState) {
     monthsLeft: deal.payDelay,
     readyWait: 0,
   });
-  return pushLog(s, note, got.r < defect ? "bad" : "good");
+  return pushLog(s, note, claimed ? "bad" : "good");
 }
 
 function applyProfit(s0: GameState, deal: Deal, payRatio: number, auto: boolean) {
@@ -656,19 +703,12 @@ function applyProfit(s0: GameState, deal: Deal, payRatio: number, auto: boolean)
 }
 
 function collect(s0: GameState, auto = false) {
-  const target = resolveTarget(s0, (d) => d.stage === "collecting");
+  const target = resolveTarget(s0, (d) => d.stage === "collecting" && (auto || d.monthsLeft <= 0));
   if (!target.deal) return s0;
   const deal = s0.deals.find((d) => d.id === target.deal!.id) ?? target.deal;
+  if (deal.monthsLeft > 0 && !auto) return s0;
   let s = auto ? s0 : spend(s0);
-  if (deal.monthsLeft > 0 && !auto) {
-    const got = roll(s);
-    s = got.s;
-    if (deal.relation > 64 && got.r < 0.34) {
-      return applyProfit(s, { ...deal, monthsLeft: 0 }, 1, false);
-    }
-    s = patchDeal(s, deal.id, { relation: clamp(deal.relation - 6, 0, 100) });
-    return pushLog(s, `${deal.client} 的账期还没到。催早了，对方回了一个冷淡的收到。`, "info");
-  }
+  if (deal.id === "d1") return applyProfit(s, deal, 1, auto);
   const market = MARKETS[deal.market];
   const skill = clamp(0.82 + s.english / 500 + s.expertise / 600, 0.82, 1.12);
   const pFull = clamp(market.pay * (0.82 + deal.relation / 380) * skill, 0.18, 0.98);
@@ -840,7 +880,15 @@ function staffWork(s0: GameState, lines: string[]) {
 
 function tickDeals(s: GameState, lines: string[]) {
   const overdue: Deal[] = [];
+  const stale: Deal[] = [];
   const deals = s.deals.map((d) => {
+    if (NEGOTIABLE.includes(d.stage)) {
+      if (d.id === "d1" && s.flags.tutorialLeft > 0) return d;
+      const readyWait = d.readyWait + 1;
+      const limit = patienceLimit(d.stage);
+      if (limit > 0 && readyWait >= limit) stale.push({ ...d, readyWait });
+      return { ...d, readyWait };
+    }
     if (d.stage === "production") {
       if (d.monthsLeft > 0) return { ...d, monthsLeft: d.monthsLeft - 1 };
       const readyWait = d.readyWait + 1;
@@ -856,16 +904,27 @@ function tickDeals(s: GameState, lines: string[]) {
     return d;
   });
   let next: GameState = { ...s, deals };
+  for (const d of stale) {
+    const live = next.deals.find((x) => x.id === d.id);
+    if (!live || !NEGOTIABLE.includes(live.stage)) continue;
+    lines.push(`${live.client} 等不到下一步，询盘凉了。`);
+    next = pushLog(next, `${live.client} 等不到下一步，询盘凉了。`, "bad");
+    next = closeDeal(next, live.id, "lost");
+  }
   for (const d of overdue) {
     const live = next.deals.find((x) => x.id === d.id);
     if (!live) continue;
     if (live.stage === "production") {
-      lines.push(`${live.client} 的货在厂里放太久，产能让给了别人。定金回不来。`);
+      const text = `${live.client} 的货在厂里放太久，产能让给了别人。定金回不来。`;
+      lines.push(text);
+      next = pushLog(next, text, "bad");
       next = closeDeal(next, live.id, "lost");
       next = { ...next, reputation: clamp(next.reputation - 4, 0, 100) };
     } else if (live.stage === "collecting") {
+      const savedFocus = next.focusId;
       lines.push(`你一直没催 ${live.client}，这个月底账自己滚过来了。`);
       next = collect({ ...next, focusId: live.id }, true);
+      if (savedFocus !== live.id) next = { ...next, focusId: savedFocus };
     }
   }
   return next;
@@ -879,8 +938,10 @@ function settleCash(s: GameState, lines: string[]) {
     lines.push(`现金不够，额度自动补上 ${yuan(need)}。`);
     return { ...s, debt: s.debt + need, cash: 0 };
   }
-  lines.push("额度也盖不住这个洞。资金链断了。");
-  return { ...s, ending: makeEnding(s, "bankrupt") };
+  const text = "额度也盖不住这个洞。资金链断了。";
+  lines.push(text);
+  const next = pushLog(s, text, "bad");
+  return { ...next, ending: makeEnding(next, "bankrupt") };
 }
 
 function makeEnding(s: GameState, id: Ending["id"]): Ending {
@@ -889,8 +950,9 @@ function makeEnding(s: GameState, id: Ending["id"]): Ending {
   const city = CITIES[s.city].name;
   const orders = s.lifetime.orders;
   const rev = yuanShort(s.lifetime.revenue);
-  const who = s.flags.married ? "家里有人等你回去" : "你还是一个人扛着账单";
+    const who = s.flags.married ? "家里有人等你回去" : "你还是一个人扛着账单";
   const team = s.staff > 0 ? `公司里还有 ${s.staff} 个人` : s.independent ? "你没有同事" : "你始终是别人的业务员";
+  const lastBad = [...s.log].reverse().find((entry) => entry.tone === "bad");
   let rank = "过来人";
   let title = "这行你算见识过了";
   if (id === "bankrupt") {
@@ -924,7 +986,7 @@ function makeEnding(s: GameState, id: Ending["id"]): Ending {
     id,
     rank,
     title,
-    body: `${cause}${city}出发，大约 ${years} 年，做成 ${orders} 笔回款，累计流水 ${rev}。${team}，${who}。净资产大约 ${yuanShort(net)}。`,
+    body: `${cause}${city}出发，大约 ${years} 年，做成 ${orders} 笔回款，累计流水 ${rev}。${team}，${who}。净资产大约 ${yuanShort(net)}。${lastBad ? `最近一件事：${lastBad.text}` : ""}`,
   };
 }
 
@@ -955,20 +1017,39 @@ function maybeChoice(s0: GameState): GameState {
   const bag: string[] = [];
   if (!s.flags.parents && s.age >= 25) bag.push("parents");
   if (!s.flags.weddingAsked && s.age >= 27 && s.age <= 36) bag.push("wedding");
-  if (s.deals.some((d) => d.stage === "production")) bag.push("hike");
-  if (s.deals.some((d) => (d.stage === "quote" || d.stage === "sample") && (d.market === "me" || d.market === "latam"))) {
+  if (s.deals.some((d) => d.stage === "production" && d.id !== "d1" && !d.hikeSeen)) bag.push("hike");
+  if (
+    s.deals.some(
+      (d) => (d.stage === "quote" || d.stage === "sample") && (d.market === "me" || d.market === "latam") && !d.greaseSeen,
+    )
+  ) {
     bag.push("kickback");
   }
-  if (s.staff >= 2) bag.push("poach");
+  if (s.staff >= 2 && s.flags.poachArm <= 0) bag.push("poach");
   if (s.month === 11) bag.push("landlord");
   if (s.independent && s.month === 1 && s.year > 2018) bag.push("renew");
-  if (s.year >= 2019) bag.push("shop");
+  if (s.year >= 2019 && !s.flags.shopAsked) bag.push("shop");
   if (bag.length === 0) return s;
   const pick = roll(s);
   s = pick.s;
   const id = bag[Math.floor(pick.r * bag.length) % bag.length];
   if (id === "parents") s = setFlags(s, { parents: true });
   if (id === "wedding") s = setFlags(s, { weddingAsked: true });
+  if (id === "shop") s = setFlags(s, { shopAsked: true });
+  if (id === "poach") s = setFlags(s, { poachArm: 6 });
+  if (id === "hike") {
+    s = { ...s, deals: s.deals.map((d) => (d.stage === "production" ? { ...d, hikeSeen: true } : d)) };
+  }
+  if (id === "kickback") {
+    s = {
+      ...s,
+      deals: s.deals.map((d) =>
+        (d.stage === "quote" || d.stage === "sample") && (d.market === "me" || d.market === "latam")
+          ? { ...d, greaseSeen: true }
+          : d,
+      ),
+    };
+  }
   return { ...s, pendingChoice: choiceById(id) };
 }
 
@@ -1194,14 +1275,18 @@ function endMonth(s0: GameState) {
   const nextHealth = clamp(s.health + (nextStress > 78 ? -5 : 2), 0, 100);
   s = { ...s, stress: nextStress, health: nextHealth };
   if (s.health <= 0) {
-    s = { ...s, ending: makeEnding(s, "burnout") };
-    lines.push("身体先签字了。");
+    const text = "身体先签字了。";
+    lines.push(text);
+    const next = pushLog(s, text, "bad");
+    s = { ...next, ending: makeEnding(next, "burnout") };
   } else if (s.stress >= 100) {
     const streak = s.flags.burnoutStreak + 1;
     s = setFlags(s, { burnoutStreak: streak });
     if (streak >= 2) {
-      s = { ...s, ending: makeEnding(s, "burnout") };
-      lines.push("连续两个月顶在极限上，你没有再撑住。");
+      const text = "连续两个月顶在极限上，你没有再撑住。";
+      lines.push(text);
+      const next = pushLog(s, text, "bad");
+      s = { ...next, ending: makeEnding(next, "burnout") };
     } else lines.push("压力到顶了。再这样一个月，人会先垮。");
   } else {
     s = setFlags(s, { burnoutStreak: 0 });
@@ -1227,11 +1312,14 @@ function endMonth(s0: GameState) {
       payCutMonths: Math.max(0, s.flags.payCutMonths - 1),
       shopMonths: Math.max(0, s.flags.shopMonths - 1),
       platformMonths: Math.max(0, s.flags.platformMonths - 1),
+      poachArm: Math.max(0, s.flags.poachArm - 1),
     },
   };
   if (s.age >= 60 && !s.ending) {
-    s = { ...s, ending: makeEnding(s, "age") };
-    lines.push("你把这门生意交了出去。");
+    const text = "你把这门生意交了出去。";
+    lines.push(text);
+    const next = pushLog(s, text, "world");
+    s = { ...next, ending: makeEnding(next, "age") };
   }
   const world = worldAt(s.year, s.month);
   lines.push(world.headline);
@@ -1244,7 +1332,7 @@ function endMonth(s0: GameState) {
   }
   return {
     ...s,
-    summary: { endedYear, endedMonth, salary, living, office, payroll, interest, lines },
+    summary: { endedYear, endedMonth, salary, living, office, payroll, interest, lines, span: 1 },
   };
 }
 
@@ -1316,6 +1404,9 @@ export function createGame(input: { name: string; city: CityId; background: Back
     shopMonths: 0,
     platformMonths: 0,
     wageBonus: 0,
+    shopAsked: false,
+    tutorialLeft: 2,
+    poachArm: 0,
   };
   const deal: Deal = {
     id: "d1",
@@ -1376,7 +1467,213 @@ export function createGame(input: { name: string; city: CityId; background: Back
     "info",
   );
   s = pushLog(s, "你还是业务员：公司垫定金和海运，利润你拿三成。哪天辞职，亏盈才全部写你的名字。", "info");
+  s = pushLog(s, "这个月只要把这张报价推进两次，然后下厂。练手单的交期会被压成一个月，做成就能看见提成。", "info");
   return s;
+}
+
+export function stressPreview(s: GameState) {
+  const load = activeDeals(s).length;
+  const delta = 1 + load - (s.rested ? 8 : 0) + (s.independent ? 0 : 1);
+  return { load, delta, next: clamp(s.stress + delta, 0, 100) };
+}
+
+export function canFastForward(s: GameState) {
+  if (blocked(s)) return false;
+  const must = listActions(s).some((a) => a.ok && (a.id === "produce" || a.id === "ship" || a.id === "collect"));
+  if (must) return false;
+  return s.deals.some(
+    (d) => (d.stage === "production" && d.monthsLeft > 0) || (d.stage === "collecting" && d.monthsLeft > 0),
+  );
+}
+
+export function fastForward(s0: GameState): GameState {
+  if (!canFastForward(s0)) return s0;
+  let s = s0;
+  const lines: string[] = [];
+  let salary = 0;
+  let living = 0;
+  let office = 0;
+  let payroll = 0;
+  let interest = 0;
+  const from = `${s.year}年${s.month}月`;
+  let span = 0;
+  let last: GameState["summary"] = null;
+  while (span < 8 && canFastForward(s)) {
+    s = endMonth({ ...s, rested: true });
+    span += 1;
+    last = s.summary;
+    if (s.summary) {
+      salary += s.summary.salary;
+      living += s.summary.living;
+      office += s.summary.office;
+      payroll += s.summary.payroll;
+      interest += s.summary.interest;
+      lines.push(...s.summary.lines);
+    }
+    if (s.pendingChoice || s.ending) break;
+    s = { ...s, summary: null };
+  }
+  lines.unshift(`从${from}起，你把 ${span} 个月连着翻过去，人按休息算。没盯的询盘会凉，轮到出运或收款时会停。`);
+  return {
+    ...s,
+    summary: {
+      endedYear: last?.endedYear ?? s0.year,
+      endedMonth: last?.endedMonth ?? s0.month,
+      salary,
+      living,
+      office,
+      payroll,
+      interest,
+      lines,
+      span,
+    },
+  };
+}
+
+export interface NextStep {
+  kind: "act" | "wait" | "end";
+  action?: ActionId;
+  dealId?: string;
+  title: string;
+  detail: string;
+  button: string;
+}
+
+function stageRank(d: Deal) {
+  const order: Stage[] = ["sample", "quote", "lead", "confirmed", "production", "collecting"];
+  const idx = order.indexOf(d.stage);
+  return idx < 0 ? 9 : idx;
+}
+
+export function suggestNext(s: GameState): NextStep {
+  const ready = (id: ActionId) => listActions(s).some((a) => a.id === id && a.ok);
+  const pick = (pred: (d: Deal) => boolean) => {
+    const pool = activeDeals(s).filter(pred);
+    if (s.flags.tutorialLeft > 0) {
+      const starter = pool.find((d) => d.id === "d1");
+      if (starter) return starter;
+    }
+    return pool.find((d) => d.id === s.focusId) ?? [...pool].sort((a, b) => stageRank(a) - stageRank(b))[0];
+  };
+  const due = pick((d) => d.stage === "collecting" && d.monthsLeft <= 0);
+  if (due && ready("collect")) {
+    return {
+      kind: "act",
+      action: "collect",
+      dealId: due.id,
+      title: `向 ${due.client} 收货款`,
+      detail: `账期到了。估算${s.independent ? "利润" : "提成"} ${yuanShort(projectedTake(s, due))}。`,
+      button: "催收回款",
+    };
+  }
+  const shipDeal = pick((d) => d.stage === "production" && d.monthsLeft <= 0);
+  if (shipDeal && ready("ship")) {
+    return {
+      kind: "act",
+      action: "ship",
+      dealId: shipDeal.id,
+      title: `验货出运：${shipDeal.client}`,
+      detail: "货齐了。现在走，不算加急。",
+      button: "验货出运",
+    };
+  }
+  const confirmed = pick((d) => d.stage === "confirmed");
+  if (confirmed && ready("produce")) {
+    return {
+      kind: "act",
+      action: "produce",
+      dealId: confirmed.id,
+      title: `下厂：${confirmed.client}`,
+      detail: s.independent ? "工厂要 30% 定金，排期才算数。" : "公司垫定金。你只要盯着这张单进产线。",
+      button: "下厂生产",
+    };
+  }
+  if (canFastForward(s)) {
+    const wait = s.deals.find(
+      (d) => (d.stage === "production" || d.stage === "collecting") && d.monthsLeft > 0,
+    );
+    const left = wait?.monthsLeft ?? 1;
+    const what = wait?.stage === "collecting" ? "账期还有" : "货还要";
+    return {
+      kind: "wait",
+      dealId: wait?.id,
+      title: wait ? `${wait.client}：${what} ${left} 个月` : "这张单还在等",
+      detail: "可以去开发别的客户，也可以把这几个月一次翻过去。翻的时候按休息算，压力不会空转。",
+      button: "翻到这张单要你",
+    };
+  }
+  const nego = pick((d) => NEGOTIABLE.includes(d.stage));
+  if (nego && ready("follow")) {
+    const step = nego.stage === "lead" ? "要到正式报价" : nego.stage === "quote" ? "推进到打样" : "把 PI 签下来";
+    const guided = s.flags.tutorialLeft > 0 && nego.id === "d1";
+    return {
+      kind: "act",
+      action: "follow",
+      dealId: nego.id,
+      title: `${nego.client}：${step}`,
+      detail: guided
+        ? "起步这单有人带，这一步会成。先把链路走通：报价、打样、签约、下厂、出运、回款。"
+        : `成功率大约 ${Math.round(followOdds(s, nego) * 100)}%。做成大约${s.independent ? "利润" : "提成"} ${yuanShort(projectedTake(s, nego))}。`,
+      button: "推进这张单",
+    };
+  }
+  const preview = stressPreview(s);
+  if (s.energy <= 0) {
+    return {
+      kind: "end",
+      title: "这个月的精力用完了",
+      detail: `现在结束，压力 ${preview.delta >= 0 ? "+" : ""}${preview.delta}（在手 ${preview.load} 张）。停一下可以让涨幅少 8。`,
+      button: "结束本月",
+    };
+  }
+  if (s.stress >= 72 && ready("rest")) {
+    return {
+      kind: "act",
+      action: "rest",
+      title: "先停一下",
+      detail: "压力再往上，连续两个月顶满就会先垮。休息会在月底少涨 8 点。",
+      button: "停一下",
+    };
+  }
+  if (ready("prospect")) {
+    return {
+      kind: "act",
+      action: "prospect",
+      title: "去开发客户",
+      detail: "手里没有能往前推的单。开发信石沉大海是常态，石沉了就换一个月。",
+      button: "开发客户",
+    };
+  }
+  return {
+    kind: "end",
+    title: "这个月可以收了",
+    detail: `压力大约 ${preview.delta >= 0 ? "+" : ""}${preview.delta}。生活费和利息在结束时结算。`,
+    button: "结束本月",
+  };
+}
+
+const FLAG_DEFAULTS: Flags = {
+  married: false,
+  frugal: false,
+  burnoutStreak: 0,
+  parents: false,
+  weddingAsked: false,
+  covid: false,
+  shelterMonths: 0,
+  payCutMonths: 0,
+  shopMonths: 0,
+  platformMonths: 0,
+  wageBonus: 0,
+  shopAsked: false,
+  tutorialLeft: 0,
+  poachArm: 0,
+};
+
+export function normalizeGame(s: GameState): GameState {
+  return sanitize({
+    ...s,
+    flags: { ...FLAG_DEFAULTS, ...s.flags },
+  });
 }
 
 export function reduce(state: GameState, action: PlayerAction): GameState {
@@ -1385,7 +1682,7 @@ export function reduce(state: GameState, action: PlayerAction): GameState {
       return scan(perform(state, action.id));
     case "focus": {
       if (blocked(state)) return state;
-      return { ...state, focusId: state.focusId === action.id ? null : action.id };
+      return { ...state, focusId: action.id };
     }
     case "aimMarket":
       return blocked(state) ? state : { ...state, aimMarket: action.id };
@@ -1402,6 +1699,8 @@ export function reduce(state: GameState, action: PlayerAction): GameState {
     case "retire":
       if (state.age < 30 && state.year < 2023) return state;
       return { ...state, summary: null, pendingChoice: null, ending: makeEnding(state, "retire") };
+    case "fastForward":
+      return scan(fastForward(state));
     default:
       return state;
   }

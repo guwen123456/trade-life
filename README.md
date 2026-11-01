@@ -8,4 +8,11 @@
 - `src/components/trade/TradeApp.tsx` 界面
 - `public/harbor.jpg`、`public/desk.jpg` 封面和工位
 
-这不是一份能单独 `npm install` 就跑起来的完整工程，只是游戏本身的代码。
+游戏逻辑和界面在 `src/`。本地试玩：
+
+```bash
+npm install
+npm run dev
+```
+
+`src/routes/index.tsx` 仍是给 TanStack Router 宿主用的入口。这个 Vite 壳直接渲染 `TradeApp`，不替换原来的引擎。

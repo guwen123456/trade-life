@@ -29,10 +29,14 @@ import {
   livingOf,
   netWorth,
   officeOf,
+  patienceLeft,
   payrollOf,
+  projectedTake,
   reduce,
   salaryOf,
   solarUnlocked,
+  stressPreview,
+  suggestNext,
   yuan,
   yuanShort,
   createGame,
@@ -47,6 +51,7 @@ import type {
   GameState,
   MarketId,
   ProductId,
+  Stage,
   Tone,
 } from "@/game/types";
 
@@ -185,7 +190,9 @@ function Title({
               </button>
             ) : null}
           </div>
-          <p className="mt-4 text-sm text-ink-soft">进度记在这台浏览器里。点一下就会有港口的底噪，右上角可以关掉。</p>
+          <p className="mt-4 text-sm text-ink-soft">
+            第一张练手单会把链路走通，大约第二个月能看见提成。进度记在这台浏览器里。点一下会有港口的底噪，右上角可以关掉。
+          </p>
         </article>
       </div>
     </main>
@@ -304,6 +311,7 @@ function Mini({ k, v }: { k: string; v: string }) {
 function Desk({ game, setGame }: { game: GameState; setGame: (g: GameState) => void }) {
   const [tab, setTab] = useState<Tab>("log");
   const [fileOpen, setFileOpen] = useState(false);
+  const [helpOpen, setHelpOpen] = useState(false);
   const [flash, setFlash] = useState(false);
   const prevCash = useRef(game.cash);
   const logRef = useRef<HTMLDivElement>(null);
@@ -330,6 +338,7 @@ function Desk({ game, setGame }: { game: GameState; setGame: (g: GameState) => v
 
   const openDeals = game.deals.filter((d) => d.stage !== "won" && d.stage !== "lost");
   const closed = game.deals.filter((d) => d.stage === "won" || d.stage === "lost");
+  const pressure = stressPreview(game);
 
   return (
     <div className="flex h-dvh flex-col overflow-hidden bg-harbor">
@@ -348,6 +357,13 @@ function Desk({ game, setGame }: { game: GameState; setGame: (g: GameState) => v
             <p className="truncate text-sm text-mist">{firmName(game)}</p>
           </div>
           <div className="flex shrink-0 items-center gap-2">
+            <button
+              type="button"
+              className="min-h-11 rounded-xl border border-line bg-panel px-3 text-sm text-foam"
+              onClick={() => setHelpOpen(true)}
+            >
+              怎么玩
+            </button>
             <MusicButton />
             <button
               type="button"
@@ -455,7 +471,10 @@ function Desk({ game, setGame }: { game: GameState; setGame: (g: GameState) => v
                 >
                   结束本月
                 </button>
-                <p className="mt-2 break-words text-xs text-mist">未用完的精力不会攒到下月。生活费、房租和利息在这时结算。</p>
+                <p className="mt-2 break-words text-xs text-mist">
+                  未用完的精力不会攒到下月。现在结束，压力 {pressure.delta >= 0 ? "+" : ""}
+                  {pressure.delta}（在手 {pressure.load} 张）。休息过的月份少涨 8。
+                </p>
               </div>
             </section>
           </div>
@@ -469,18 +488,21 @@ function Desk({ game, setGame }: { game: GameState; setGame: (g: GameState) => v
               {openDeals.map((deal) => (
                 <DealTicket
                   key={deal.id}
+                  game={game}
                   deal={deal}
                   active={game.focusId === deal.id}
                   onPick={() => setGame(reduce(game, { type: "focus", id: deal.id }))}
                 />
               ))}
               {closed.map((deal) => (
-                <DealTicket key={deal.id} deal={deal} active={false} muted onPick={() => undefined} />
+                <DealTicket key={deal.id} game={game} deal={deal} active={false} muted onPick={() => undefined} />
               ))}
             </div>
           </section>
         </>
       )}
+
+      <NextBar game={game} setGame={setGame} setTab={setTab} />
 
       <nav className="grid shrink-0 grid-cols-4 border-t border-line bg-dock md:hidden">
         <TabButton id="log" tab={tab} setTab={setTab} icon={<BookOpen size={16} />} label="手记" />
@@ -503,13 +525,23 @@ function Desk({ game, setGame }: { game: GameState; setGame: (g: GameState) => v
             <p className="text-sm text-ink-soft">
               {game.summary.endedYear}年{game.summary.endedMonth}月结算
             </p>
-            <h2 className="font-serif text-3xl">月底</h2>
+            <h2 className="font-serif text-3xl">{(game.summary.span ?? 1) > 1 ? `连过 ${game.summary.span} 个月` : "月底"}</h2>
             <dl className="mt-4 grid grid-cols-2 gap-2 text-sm">
               <Row k="工资" v={yuan(game.summary.salary)} />
-              <Row k="生活" v={yuan(game.summary.living)} />
-              <Row k="办公" v={yuan(game.summary.office)} />
-              <Row k="人工" v={yuan(game.summary.payroll)} />
-              <Row k="利息" v={yuan(game.summary.interest)} />
+              <Row k="生活" v={yuan(-game.summary.living)} />
+              <Row k="办公" v={yuan(-game.summary.office)} />
+              <Row k="人工" v={yuan(-game.summary.payroll)} />
+              <Row k="利息" v={yuan(-game.summary.interest)} />
+              <Row
+                k="固定净结余"
+                v={yuan(
+                  game.summary.salary -
+                    game.summary.living -
+                    game.summary.office -
+                    game.summary.payroll -
+                    game.summary.interest,
+                )}
+              />
               <Row k="结余现金" v={yuan(game.cash)} />
             </dl>
             <ul className="mt-4 flex flex-col gap-2 text-sm">
@@ -547,6 +579,8 @@ function Desk({ game, setGame }: { game: GameState; setGame: (g: GameState) => v
           </article>
         </div>
       ) : null}
+
+      {helpOpen ? <Help onClose={() => setHelpOpen(false)} /> : null}
     </div>
   );
 }
@@ -610,23 +644,133 @@ function TabButton({
   );
 }
 
+const PIPELINE: { id: Stage; label: string }[] = [
+  { id: "lead", label: "询盘" },
+  { id: "quote", label: "报价" },
+  { id: "sample", label: "打样" },
+  { id: "confirmed", label: "签约" },
+  { id: "production", label: "生产" },
+  { id: "collecting", label: "回款" },
+];
+
+function Pipeline({ stage }: { stage: Stage }) {
+  const idx = PIPELINE.findIndex((step) => step.id === stage);
+  if (idx < 0) return null;
+  return (
+    <p className="mt-1 text-xs text-mist">
+      {PIPELINE.map((step, i) => (
+        <span key={step.id} className={i === idx ? "text-brass" : i < idx ? "text-foam" : undefined}>
+          {step.label}
+          {i < PIPELINE.length - 1 ? " → " : ""}
+        </span>
+      ))}
+    </p>
+  );
+}
+
+function NextBar({
+  game,
+  setGame,
+  setTab,
+}: {
+  game: GameState;
+  setGame: (g: GameState) => void;
+  setTab: (t: Tab) => void;
+}) {
+  const step = suggestNext(game);
+  const deal = game.deals.find((item) => item.id === step.dealId);
+  const go = () => {
+    if (game.summary || game.pendingChoice || game.ending) return;
+    if (step.kind === "wait") {
+      setGame(reduce(game, { type: "fastForward" }));
+      setTab("log");
+      return;
+    }
+    if (step.kind === "end" || !step.action) {
+      setGame(reduce(game, { type: "endMonth" }));
+      return;
+    }
+    let next = game;
+    if (step.dealId && next.focusId !== step.dealId) next = reduce(next, { type: "focus", id: step.dealId });
+    setGame(reduce(next, { type: "act", id: step.action }));
+    setTab("log");
+  };
+  return (
+    <div className="shrink-0 border-t border-brass/40 bg-dock px-4 py-3">
+      <div className="mx-auto flex max-w-3xl flex-col gap-3 sm:flex-row sm:items-center">
+        <div className="min-w-0 flex-1">
+          <p className="text-xs tracking-wide text-brass">现在该做</p>
+          <p className="font-serif text-lg leading-snug text-foam">{step.title}</p>
+          <p className="text-sm leading-6 text-mist">{step.detail}</p>
+          {deal ? <Pipeline stage={deal.stage} /> : null}
+        </div>
+        <button
+          type="button"
+          data-testid="next-step"
+          onClick={go}
+          className="min-h-11 shrink-0 rounded-xl bg-brass px-4 py-3 font-serif text-lg text-ink"
+        >
+          {step.button}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function Help({ onClose }: { onClose: () => void }) {
+  return (
+    <div className="fixed inset-0 z-50 flex items-end justify-center bg-harbor/80 p-3 sm:items-center">
+      <article className="paper-grain max-h-[86dvh] w-full max-w-lg overflow-y-auto rounded-card p-5 text-ink">
+        <h2 className="font-serif text-3xl">这行怎么转</h2>
+        <ul className="mt-4 flex list-disc flex-col gap-2 pl-5 text-sm">
+          <li>底栏那颗按钮，就是这个月最该做的事。每月大约 3 点精力，点一次用一点。</li>
+          <li>一张单的路：询盘 → 报价 → 打样 → 签约 → 下厂 → 出运 → 回款。</li>
+          <li>上班时公司垫定金和海运，你拿利润的三成。货没齐别出运，账期没到别催。</li>
+          <li>询盘放着不管会凉，票据上写着还肯等几个月。厂里或账期还要等，可以把月份一次翻过去。</li>
+          <li>在手的单越多，月底压力涨得越狠。连续两个月顶满，人会先结束。</li>
+          <li>客户都是虚构的。游戏不会替你联系任何真实公司。</li>
+        </ul>
+        <button type="button" onClick={onClose} className="mt-5 min-h-11 w-full rounded-xl bg-ink px-3 py-3 font-serif text-lg text-paper">
+          回到工位
+        </button>
+      </article>
+    </div>
+  );
+}
+
 function DealTicket({
+  game,
   deal,
   active,
   muted,
   onPick,
 }: {
+  game: GameState;
   deal: Deal;
   active: boolean;
   muted?: boolean;
   onPick: () => void;
 }) {
+  const wait = patienceLeft(deal);
+  const timing =
+    deal.stage === "production"
+      ? deal.monthsLeft > 0
+        ? `货还要 ${deal.monthsLeft} 个月`
+        : "货齐了，可以出运"
+      : deal.stage === "collecting"
+        ? deal.monthsLeft > 0
+          ? `账期还要 ${deal.monthsLeft} 个月`
+          : "账期到了，可以催收"
+        : wait !== null
+          ? `客户还肯等 ${wait} 个月`
+          : "";
+  const open = deal.stage !== "won" && deal.stage !== "lost";
   return (
     <button
       type="button"
       disabled={muted}
       onClick={onPick}
-      className={`w-52 shrink-0 rounded-xl border px-3 py-3 text-left ${
+      className={`w-56 shrink-0 rounded-xl border px-3 py-3 text-left ${
         muted ? "border-line opacity-50" : active ? "border-brass bg-panel" : "border-line bg-dock"
       }`}
     >
@@ -638,10 +782,13 @@ function DealTicket({
       <span className="mt-2 block text-sm text-foam">${deal.valueUsd.toLocaleString("en-US")}</span>
       <span className="block text-xs text-mist">
         毛利 {Math.round(deal.margin * 100)}% · 关系 {Math.round(deal.relation)}
-        {deal.stage === "production" || deal.stage === "collecting"
-          ? ` · ${deal.monthsLeft > 0 ? `还要 ${deal.monthsLeft} 个月` : "这个月可以处理"}`
-          : ""}
+        {timing ? ` · ${timing}` : ""}
       </span>
+      {open ? (
+        <span className="mt-1 block text-xs text-brass">
+          {game.independent ? "估算利润" : "估算提成"} {yuanShort(projectedTake(game, deal))}
+        </span>
+      ) : null}
     </button>
   );
 }
@@ -800,6 +947,14 @@ function Ending({ game, onAgain, onTitle }: { game: GameState; onAgain: () => vo
         <h1 className="mt-2 font-serif text-4xl text-foam md:text-5xl">{ending.title}</h1>
         <article className="paper-grain mt-5 rounded-card p-5 text-ink">
           <p>{ending.body}</p>
+          <dl className="mt-4 grid grid-cols-2 gap-2 text-sm">
+            <Row k="现金" v={yuan(game.cash)} />
+            <Row k="负债" v={yuan(game.debt)} />
+            <Row k="压力" v={String(Math.round(game.stress))} />
+            <Row k="健康" v={String(Math.round(game.health))} />
+            <Row k="成交" v={String(game.lifetime.orders)} />
+            <Row k="坏账" v={String(game.lifetime.badDebt)} />
+          </dl>
           <p className="mt-3 text-sm text-ink-soft">
             {game.name} · {CITIES[game.city].name} · {BACKGROUNDS[game.background].label} · {companyLabel(game)}
           </p>
