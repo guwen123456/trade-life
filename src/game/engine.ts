@@ -144,7 +144,9 @@ export function creditLimit(s: GameState) {
 export function netWorth(s: GameState) {
   const pipe = s.deals
     .filter((d) => d.stage === "confirmed" || d.stage === "production" || d.stage === "collecting")
-    .reduce((sum, d) => sum + expectedProfit(s, d) * (s.independent ? 0.4 : 0.08), 0);
+    // 打工路线在手订单的最终所得就是提成，与回款结算同一口径：利润 × COMMISSION(0.3)。
+    // 此前按 0.08 折算，与提成规则矛盾，净资产和结局评级被系统性低估。
+    .reduce((sum, d) => sum + expectedProfit(s, d) * (s.independent ? 0.4 : COMMISSION), 0);
   return s.cash - s.debt + pipe;
 }
 
@@ -410,8 +412,11 @@ function spawnLead(s0: GameState, warm: boolean) {
   const city = CITIES[s.city];
   let marketRoll = roll(s);
   s = marketRoll.s;
-  const market: MarketId =
-    marketRoll.r < 0.62 ? s.aimMarket : city.markets[Math.floor(marketRoll.r * city.markets.length) % city.markets.length];
+  // 后备市场抽取：把 [0.62, 1) 重新缩放回 [0, 1) 再取索引，保证城市市场池均匀可达。
+  // 此前直接 floor(r * len)：r∈[0.62,1) 时索引恒为尾部几项，markets[0] 永远抽不到，分布偏斜。
+  const fallbackIdx =
+    Math.floor(((marketRoll.r - 0.62) / 0.38) * city.markets.length) % city.markets.length;
+  const market: MarketId = marketRoll.r < 0.62 ? s.aimMarket : city.markets[fallbackIdx];
   let productRoll = roll(s);
   s = productRoll.s;
   let product: ProductId = s.aimProduct;
